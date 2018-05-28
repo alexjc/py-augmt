@@ -18,11 +18,8 @@ class IPFSClient(object):
     to the experimental pubsub functionality.
     """
 
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
-        self.base = f'http://{self.host}:{self.port}/api/v0'
-
+    def __init__(self, host='localhost', port=5001, base='api/v0'):
+        self.base = f'http://{host}:{port}/{base}'
         self.session = aiohttp.ClientSession()
 
     async def close(self):
@@ -30,10 +27,10 @@ class IPFSClient(object):
 
     async def publish(self, topic, data):
         text = json.dumps(data)
-        await self._request('/pubsub/pub', topic, text)
+        await self._get('/pubsub/pub', topic, text)
 
     async def subscribe(self, topic):
-        async with self._request('/pubsub/sub', topic) as response:
+        async with self._get('/pubsub/sub', topic) as response:
             while True:
                 line = await response.content.readline()
                 msg = self._parse(line)
@@ -41,9 +38,29 @@ class IPFSClient(object):
                     continue
                 yield msg
 
-    def _request(self, url, *args, **kwargs):
+    async def cat(self, multihash, **kwargs):
+        response = await self._get('/cat', multihash)
+        return await response.read()
+
+    async def ls(self, multihash, **kwargs):
+        return await self._request('/ls', multihash)
+
+    async def refs_local(self, **kwargs):
+        return await self._request('/refs/local')
+
+    def _get(self, url, *args, **kwargs):
         return self.session.get(url=f'{self.base}{url}',
                                 params=[('arg', a) for a in args])
+
+    async def _request(self, url, *args, **kwargs):
+        output = []
+        async with self._get(url, *args, **kwargs) as response:
+            while True:
+                data = await response.content.readline()
+                if len(data) == 0:
+                    break
+                output.append(json.loads(data))
+        return output
 
     def _parse(self, text):
         msg = json.loads(text)
@@ -64,16 +81,24 @@ class Application(object):
 
     async def shutdown(self):
         await self.client.close()
+        self.client = None
 
     async def receive(self):
         print('Receiving messages...')
         async for msg in self.client.subscribe(topic='augmt-12345678'):
             print('  -> received:', msg['data'])
 
-    async def run(self):
+    async def main(self):
         await self.initialize()
-        t = asyncio.ensure_future(self.receive())
 
+        print('Local objects...')
+        for item in (await self.client.refs_local()):
+            print(await self.client.ls(item['Ref']))
+
+        # data = await self.client.cat('QmZTR5bcpQD7cFgTorqxZDYaew1Wqgfbd2ud9QqGPAkK2V')
+        # print(data)
+
+        t = asyncio.ensure_future(self.receive())
         for i in range(10):
             await asyncio.sleep(2.0)
             print(f'  <- sending... {i}')
@@ -85,10 +110,10 @@ class Application(object):
 
         await self.shutdown()
 
-    def main(self):
-        self.loop.run_until_complete(app.run())
+    def run(self):
+        self.loop.run_until_complete(app.main())
 
 
 if __name__ == "__main__":
     app = Application()
-    app.main()
+    app.run()
